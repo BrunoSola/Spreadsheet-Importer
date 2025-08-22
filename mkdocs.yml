@@ -1,7 +1,7 @@
 site_name: Spreadsheet Importer
 site_description: Importador serverless (XLSX/CSV) com integração Flowch
-site_url: https://SEU_GITHUB_USER.github.io/SEU_REPO
-repo_url: https://github.com/SEU_GITHUB_USER/SEU_REPO
+site_url: https://BrunoSola.github.io/Spreadsheet-Importer
+repo_url: https://github.com/BrunoSola/Spreadsheet-Importer
 edit_uri: ""
 
 theme:
