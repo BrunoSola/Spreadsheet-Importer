@@ -17,15 +17,28 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.x"
-      - run: pip install mkdocs-material
-      - run: mkdocs build --strict
-      - uses: actions/upload-pages-artifact@v3
+
+      - name: Install MkDocs Material
+        run: |
+          pip install mkdocs mkdocs-material
+
+      # Falha aqui se algo estiver errado no mkdocs.yml
+      - name: Build MkDocs (strict)
+        run: mkdocs build --strict
+
+      # Publica o site gerado (pasta ./site) como artifact para o Pages
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: ./site
+
   deploy:
     needs: build
     runs-on: ubuntu-latest
