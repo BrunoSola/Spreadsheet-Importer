@@ -1,24 +1,36 @@
 openapi: 3.0.3
 info:
-  title: Importadora de CSV/XLSX → Flowch
-  version: 1.0.0
+  title: Spreadsheet Importer (XLSX/CSV)
   description: |
-    Importador serverless que lê **CSV/XLSX** e envia cada linha para o Flowch.
+    Lambda para importar planilhas **XLSX/CSV**, transformar linhas em registros e enviar para o Flowch.
 
-    ## Modos
-    - **Integração (padrão):** envia **registro a registro** para outra Lambda/URL (env `INTEGRATION_URL`).
-      - Header **`endpoint`** obrigatório (nome do endpoint de integração).
-    - **Direto (batch):** envia **em lotes** diretamente para uma URL completa do Flowch (header `x-endpoint-url`).
-      - Header `x-batch-size` controla o tamanho do lote (padrão 20).
-    
-    ## Entrada do arquivo
-    - `multipart/form-data` com campo **`file`**
-    - **ou** `application/json` com `{ base64, filename?, contentType? }`
-    
-    ## Normalizações
-    - Datas suportadas: `dd/MM/yyyy`, `dd/MM/yyyy HH:mm`, `yyyy-MM-dd`, `yyyy-MM-dd HH:mm`, `yyyy-MM-dd[ T]HH:mm:ss` → **`yyyy-MM-dd HH:mm:ss`**
-    - Booleanos: `"true"/"1"` → `true`; `"false"/"0"` → `false`
-    - CSV robusto (detecta delimitador `; , \t |`, trata BOM, fallback de cabeçalho, explode linhas "empacotadas").
+    **Modos de envio**  
+    - **Integração (via endpoint):** encaminha cada registro para sua Lambda de integração (`INTEGRATION_URL`), que então chama o Flowch.  
+    - **Direto ao Flowch (via x-endpoint-url):** envia **em lotes** diretamente para um endpoint completo do Flowch.
+
+    **Headers principais**
+    - `Authorization` — token **cru** do Flowch (sem `integration `).
+    - `endpoint` — **obrigatório no modo Integração** (ignorado se `x-endpoint-url` for enviado).
+    - `x-endpoint-url` — **ativa modo Direto** (URL completa do Flowch).
+    - `x-batch-size` — tamanho dos lotes no modo Direto (default 20).
+    - `x-dry-run` — `"true"` simula (não envia).
+    - `x-preview` — `"true"` retorna amostra (até 5 linhas).
+    - `x-limit` — processa apenas N linhas do arquivo.
+
+    **Entrada do arquivo**  
+    - `multipart/form-data` com a parte `file`  
+    **ou**  
+    - `application/json` com `{ base64, filename?, contentType? }`.
+
+    **Regras de parsing**
+    - 1ª linha é o **cabeçalho** (obrigatório; sem duplicadas; sem nomes vazios).
+    - CSV: detecta delimitador automaticamente (`; , \t |`) e trata BOM/latin1 quando necessário.
+    - XLSX: lido com ExcelJS, preserva boolean/number e converte Date → ISO quando aplicável.
+    - `true/false` → boolean (não string).
+    - Datas reconhecidas em strings são normalizadas p/ `"yyyy-MM-dd HH:mm:ss"`.
+    - Números com vírgula decimal **são mantidos como string** (ex.: `"10,2"`).
+
+  version: "1.0.0"
 
 servers:
   - url: https://{api_id}.execute-api.{region}.amazonaws.com/{stage}
@@ -27,34 +39,85 @@ servers:
       region: { default: sa-east-1 }
       stage:  { default: prod }
 
+tags:
+  - name: Importação
+    description: Importa arquivo (XLSX/CSV), transforma e envia conforme o modo escolhido.
+
 paths:
   /import:
     post:
-      summary: Importa arquivo CSV/XLSX e envia ao Flowch (integração ou direto)
+      tags: [Importação]
+      summary: Importar planilha e despachar registros (Integração ou Direto)
       description: |
-        **Headers obrigatórios**:
-        - `Authorization`: token **cru** do Flowch (o código adiciona `integration ` quando necessário).
-        - **Modo Integração:** `endpoint` (string)
-        - **Modo Direto:** `x-endpoint-url` (URL completa do Flowch). Se presente, `endpoint` é ignorado.
+        Envie um **XLSX/CSV** via `multipart/form-data` (campo `file`) **ou** um JSON com `{ base64, filename?, contentType? }`.
 
-        **Outros headers**:
-        - `x-batch-size`: inteiro (modo direto), default 20
-        - `x-dry-run`: `true|false` (simulação)
-        - `x-preview`: `true|false` (retorna até 5 linhas parseadas)
-        - `x-limit`: `N` (processa apenas N linhas)
-        - `x-stop-on-error`: `true|false` (interrompe ao primeiro erro no modo integração)
-        - `x-log-progress`: `true|false` (loga métricas por lote)
+        - **Modo Integração:** envie o header `endpoint` (ex.: `"avaliacaoDesempenho"`).  
+          A Lambda de integração é lida da variável de ambiente `INTEGRATION_URL`.
+
+        - **Modo Direto:** envie `x-endpoint-url` com a **URL completa do Flowch**.  
+          O envio será feito **em lotes** (`x-batch-size`, default 20).
 
       parameters:
-        - $ref: '#/components/parameters/Authorization'
-        - $ref: '#/components/parameters/Endpoint'
-        - $ref: '#/components/parameters/XEndpointUrl'
-        - $ref: '#/components/parameters/XBatchSize'
-        - $ref: '#/components/parameters/XDryRun'
-        - $ref: '#/components/parameters/XPreview'
-        - $ref: '#/components/parameters/XLimit'
-        - $ref: '#/components/parameters/XStopOnError'
-        - $ref: '#/components/parameters/XLogProgress'
+        - in: header
+          name: Authorization
+          description: Token cru do Flowch (sem prefixo).
+          required: true
+          schema: { type: string }
+          example: aed28a073116dadaf017563f50804cfc
+
+        - in: header
+          name: endpoint
+          description: Obrigatório no **modo Integração**. Ignorado se `x-endpoint-url` for usado.
+          required: false
+          schema: { type: string }
+          examples:
+            avaliacaoDesempenho:
+              summary: Exemplo (Integração)
+              value: avaliacaoDesempenho
+
+        - in: header
+          name: x-endpoint-url
+          description: URL **completa** do Flowch (ativa o **modo Direto**).
+          required: false
+          schema:
+            type: string
+            format: uri
+          examples:
+            direto:
+              summary: Exemplo (Direto)
+              value: https://int01.flowch.com/integrator/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/avaliacaoDesempenho
+
+        - in: header
+          name: x-batch-size
+          description: Tamanho dos lotes no modo Direto.
+          required: false
+          schema: { type: integer, default: 20 }
+          example: 50
+
+        - in: header
+          name: x-dry-run
+          description: Se `"true"`, **simula** (não envia).
+          required: false
+          schema:
+            type: string
+            enum: ["true", "false"]
+          example: "true"
+
+        - in: header
+          name: x-preview
+          description: Se `"true"`, retorna amostra (até 5 linhas).
+          required: false
+          schema:
+            type: string
+            enum: ["true", "false"]
+          example: "false"
+
+        - in: header
+          name: x-limit
+          description: Processa no máximo **N** linhas.
+          required: false
+          schema: { type: integer, minimum: 1 }
+          example: 100
 
       requestBody:
         required: true
@@ -62,270 +125,175 @@ paths:
           multipart/form-data:
             schema:
               type: object
-              required: [ file ]
               properties:
                 file:
+                  description: Arquivo XLSX/CSV
                   type: string
                   format: binary
             examples:
-              xlsx:
-                summary: XLSX com cabeçalho na primeira linha
-                description: Envie um .xlsx válido; a primeira linha define os nomes das colunas.
-              csv:
-                summary: CSV delimitado por ponto e vírgula
-                description: O parser detecta automaticamente `; , \t |`, trata BOM e aspas.
+              xlsx_integra:
+                summary: XLSX (modo Integração)
+                description: Envio de XLSX com header `endpoint`.
+                value: {}
+              csv_direto:
+                summary: CSV (modo Direto)
+                description: Envio de CSV com `x-endpoint-url` para lotes.
+                value: {}
+
           application/json:
             schema:
-              $ref: '#/components/schemas/JsonUpload'
+              type: object
+              properties:
+                base64:
+                  type: string
+                  description: Arquivo inteiro em base64 (pode ter dataURL; será removido).
+                filename:
+                  type: string
+                  description: Nome do arquivo (opcional).
+                contentType:
+                  type: string
+                  description: Content-Type do arquivo (opcional).
+              required: [base64]
             examples:
-              base64-xlsx:
-                summary: XLSX em base64
+              json_integra:
+                summary: JSON base64 (Integração)
                 value:
+                  base64: "UEsDBBQACAAI... (base64 XLSX ou CSV) ..."
                   filename: "dados.xlsx"
                   contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                  base64: "UEsDBBQAAAAI..."  # truncado
-              base64-csv:
-                summary: CSV em base64
+              json_direto:
+                summary: JSON base64 (Direto)
                 value:
+                  base64: "ZWNvLWRlLWNzdi1lbSB1dGY4IG91IGxhdGluMQo=..."
                   filename: "dados.csv"
                   contentType: "text/csv"
-                  base64: "Q29sMQpWYWwxCg=="  # "Col1\nVal1\n"
 
       responses:
-        '200':
-          description: Import executado (ou simulado se x-dry-run=true)
+        "200":
+          description: Sucesso (resumo + detalhes)
           content:
             application/json:
-              schema:
-                oneOf:
-                  - $ref: '#/components/schemas/DirectSummary'
-                  - $ref: '#/components/schemas/IntegrationSummary'
               examples:
-                direto:
-                  summary: Modo direto (batches para Flowch)
-                  value:
-                    summary:
-                      modo: "direto-flowch"
-                      endpointUrl: "https://int01.flowch.com/integrator/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/avaliacaoDesempenho"
-                      linhasLidas: 120
-                      enviadasAprox: 120
-                      errosBatches: 0
-                      duracaoMs: 2310
-                      dryRun: false
-                      preview: true
-                      batchSize: 20
-                      totalBatches: 6
-                    preview:
-                      - { nome: "Ana", ativo: true, data_nasc: "1990-05-10 00:00:00" }
-                      - { nome: "Bruno", ativo: false, data_nasc: "1988-11-20 00:00:00" }
-                    batches:
-                      - { batchIndex: 1, size: 20, statusCode: 200, durationMs: 380, body: { accepted: 20 } }
-                integracao:
-                  summary: Modo integração (registro a registro)
+                sucesso_integracao:
+                  summary: Sucesso – **Modo Integração**
                   value:
                     summary:
                       arquivo: "dados.xlsx"
                       contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                      linhasLidas: 5
-                      enviadas: 4
-                      jaExistiam: 1
-                      erros: 0
-                      duracaoMs: 820
+                      linhasLidas: 128
+                      enviadas: 125
+                      jaExistiam: 2
+                      erros: 1
+                      duracaoMs: 3456
                       dryRun: false
                       preview: false
                       paralelismo: 5
                       batchSize: 5
+                    preview: null
+                    errosAmostra:
+                      - linha: 27
+                        endpoint: "avaliacaoDesempenho"
+                        status: "ERRO"
+                        mensagem: "Campo obrigatório ausente: recibo_cod"
+                        upstreamStatus: 400
+                        perfMs: 120
                     results:
-                      - { linha: 2, endpoint: "recibo", status: "ENVIADO", mensagem: "OK", upstreamStatus: 200, perfMs: 120 }
-                      - { linha: 3, endpoint: "recibo", status: "ALREADY_EXISTS", mensagem: "Registro já existia no destino.", upstreamStatus: 200, perfMs: 90 }
+                      - linha: 2
+                        endpoint: "avaliacaoDesempenho"
+                        status: "ENVIADO"
+                        mensagem: "OK"
+                        upstreamStatus: 200
+                        perfMs: 98
 
-        '400':
-          description: Erro de entrada (headers/body/arquivo)
+                sucesso_direto:
+                  summary: Sucesso – **Modo Direto (lotes)**
+                  value:
+                    summary:
+                      modo: "direto-flowch"
+                      endpointUrl: "https://int01.flowch.com/integrator/uuid/avaliacaoDesempenho"
+                      linhasLidas: 1200
+                      enviadasAprox: 1180
+                      errosBatches: 1
+                      duracaoMs: 12987
+                      dryRun: false
+                      preview: false
+                      batchSize: 50
+                      totalBatches: 24
+                    preview: null
+                    batches:
+                      - batchIndex: 1
+                        size: 50
+                        statusCode: 200
+                        durationMs: 220
+                        body: { accepted: 50 }
+                      - batchIndex: 2
+                        size: 50
+                        statusCode: 500
+                        durationMs: 210
+                        body: { error: "UPSTREAM_5XX" }
+
+                preview_example:
+                  summary: **Pré-visualização** (x-preview:true)
+                  value:
+                    summary:
+                      arquivo: "dados.csv"
+                      contentType: "text/csv"
+                      linhasLidas: 10
+                      enviadas: 0
+                      jaExistiam: 0
+                      erros: 0
+                      duracaoMs: 150
+                      dryRun: false
+                      preview: true
+                      paralelismo: 5
+                      batchSize: 5
+                    preview:
+                      - { nome: "Ana", email: "ana@acme.com", ativo: true,  nota: "10,2", data: "2025-01-31 00:00:00" }
+                      - { nome: "Bob", email: "bob@acme.com", ativo: false, nota: "8,7",  data: "2025-02-01 00:00:00" }
+                    results: []
+
+                dry_run_example:
+                  summary: **Dry-run** (x-dry-run:true)
+                  value:
+                    summary:
+                      modo: "direto-flowch"
+                      endpointUrl: "https://int01.flowch.com/integrator/uuid/avaliacaoDesempenho"
+                      linhasLidas: 200
+                      enviadas: 0
+                      jaExistiam: 0
+                      erros: 0
+                      duracaoMs: 320
+                      dryRun: true
+                      preview: false
+                      batchSize: 20
+                    results: []
+
+        "400":
+          description: Requisição inválida (headers/arquivo)
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
               examples:
-                sem-auth:
+                sem_auth:
+                  summary: Falta Authorization
                   value: { error: 'Header "Authorization" é obrigatório.' }
-                sem-endpoint-e-sem-url:
+                sem_endpoint_e_sem_url:
+                  summary: Nem endpoint (integração) nem x-endpoint-url (direto) foram enviados
                   value: { error: 'Header "endpoint" é obrigatório (ou use x-endpoint-url).' }
-                xls:
-                  value: { error: 'Arquivos .xls não são suportados por segurança. Exporte como .xlsx ou .csv.' }
-                csv-sem-cabecalho:
-                  value: { error: 'Cabeçalho CSV ausente.' }
+                arquivo_vazio:
+                  summary: Arquivo ausente
+                  value: { error: 'Arquivo ausente no body (base64/multipart) ou vazio.' }
+                csv_ruim:
+                  summary: CSV com cabeçalho inválido
+                  value: { error: 'Cabeçalho CSV inválido: colunas duplicadas.' }
 
-        '413':
+        "413":
           description: Arquivo muito grande
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-              examples:
-                limite:
-                  value: { error: 'Arquivo maior que o permitido (6000000 bytes > 5242880).' }
+              example: { error: 'Arquivo maior que o permitido (6000000 bytes > 5242880).' }
 
-        '500':
-          description: Erro inesperado no processamento
+        "500":
+          description: Erro inesperado
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-              examples:
-                generico:
-                  value: { error: 'Erro inesperado' }
-
-components:
-  parameters:
-    Authorization:
-      name: Authorization
-      in: header
-      required: true
-      schema: { type: string }
-      description: Token cru do Flowch (sem prefixo).
-    Endpoint:
-      name: endpoint
-      in: header
-      required: false
-      schema: { type: string }
-      description: Obrigatório no **modo integração**. Ignorado se `x-endpoint-url` for usado.
-    XEndpointUrl:
-      name: x-endpoint-url
-      in: header
-      required: false
-      schema: { type: string, format: uri }
-      description: URL completa do Flowch (ativa o **modo direto**).
-    XBatchSize:
-      name: x-batch-size
-      in: header
-      required: false
-      schema: { type: integer, minimum: 1, default: 20 }
-      description: Tamanho dos lotes no modo direto.
-    XDryRun:
-      name: x-dry-run
-      in: header
-      required: false
-      schema: { type: string, enum: ['true','false'] }
-      description: Se `true`, simula (não envia).
-    XPreview:
-      name: x-preview
-      in: header
-      required: false
-      schema: { type: string, enum: ['true','false'] }
-      description: Se `true`, retorna amostra (até 5 linhas).
-    XLimit:
-      name: x-limit
-      in: header
-      required: false
-      schema: { type: integer, minimum: 1 }
-      description: Processa no máximo N linhas.
-    XStopOnError:
-      name: x-stop-on-error
-      in: header
-      required: false
-      schema: { type: string, enum: ['true','false'] }
-      description: (Integração) Interrompe no primeiro erro.
-    XLogProgress:
-      name: x-log-progress
-      in: header
-      required: false
-      schema: { type: string, enum: ['true','false'] }
-      description: Loga progresso e métricas por lote.
-
-  schemas:
-    JsonUpload:
-      type: object
-      required: [ base64 ]
-      properties:
-        base64:
-          type: string
-          description: Arquivo em base64 (suporta prefixo dataURL; será removido).
-        filename:
-          type: string
-          description: Nome sugerido para inferência (ex. `dados.csv`).
-        contentType:
-          type: string
-          description: Tipo MIME (ex. `text/csv`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`).
-      example:
-        filename: "dados.csv"
-        contentType: "text/csv"
-        base64: "QW5hO3RydWU7MjAwMC0wMS0wMSAK"
-
-    DirectSummary:
-      type: object
-      properties:
-        summary:
-          type: object
-          properties:
-            modo: { type: string, enum: ["direto-flowch"] }
-            endpointUrl: { type: string }
-            linhasLidas: { type: integer }
-            enviadasAprox: { type: integer, description: "Aproximação: considera o lote aceito se resposta 2xx." }
-            errosBatches: { type: integer }
-            duracaoMs: { type: integer }
-            dryRun: { type: boolean }
-            preview: { type: boolean }
-            batchSize: { type: integer }
-            totalBatches: { type: integer }
-        preview:
-          type: array
-          items: { type: object, additionalProperties: true }
-        batches:
-          type: array
-          items:
-            type: object
-            properties:
-              batchIndex: { type: integer }
-              size: { type: integer }
-              statusCode: { type: integer }
-              durationMs: { type: integer }
-              body: {}
-
-    IntegrationSummary:
-      type: object
-      properties:
-        summary:
-          type: object
-          properties:
-            arquivo: { type: string }
-            contentType: { type: string }
-            linhasLidas: { type: integer }
-            enviadas: { type: integer }
-            jaExistiam: { type: integer }
-            erros: { type: integer }
-            duracaoMs: { type: integer }
-            dryRun: { type: boolean }
-            preview: { type: boolean }
-            paralelismo: { type: integer }
-            batchSize: { type: integer }
-        preview:
-          type: array
-          items: { type: object, additionalProperties: true }
-        errosAmostra:
-          type: array
-          items:
-            type: object
-            properties:
-              linha: { type: integer }
-              endpoint: { type: string }
-              status: { type: string }
-              mensagem: { type: string }
-              upstreamStatus: { type: integer }
-              upstreamBody: {}
-              perfMs: { type: integer }
-        results:
-          type: array
-          items:
-            type: object
-            properties:
-              linha: { type: integer }
-              endpoint: { type: string }
-              status: { type: string, enum: ["ENVIADO", "ALREADY_EXISTS", "ERRO", "ENVIADO (DRY-RUN)"] }
-              mensagem: { type: string }
-              upstreamStatus: { type: integer }
-              perfMs: { type: integer }
-
-    Error:
-      type: object
-      properties:
-        error: { type: string }
+              example: { error: 'Erro inesperado' }
